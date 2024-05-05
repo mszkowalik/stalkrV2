@@ -1,0 +1,3 @@
+[submodule "grindr_access"]
+	path = grindr_access
+	url = git@github.com:mszkowalik/grindr_access.git
