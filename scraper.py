@@ -1,45 +1,113 @@
+import os
+from dotenv import load_dotenv
 from kafka import KafkaProducer
+import pygeohash as gh
 import json
+from time import sleep
 from pymongo import MongoClient
 import concurrent.futures
 from datetime import datetime
+import logging
+from stalkr import GH_PRECISION, generate_points_in_geojson_feature, query_anchor_point
+from grindr_access.grindr_user import GrindrUser
+import hashlib
 
+
+# Set up basic configuration to suppress all logging from other modules
+logging.basicConfig(format='%(asctime)s %(message)s', level=logging.CRITICAL + 1)
+
+# Create and configure a logger for your specific module
+logger = logging.getLogger('stalkrV2')
+logger.setLevel(logging.DEBUG)  # Set your logger's level to DEBUG
+
+load_dotenv()
 # Establish MongoDB connection
 mongo_client = MongoClient('mongodb://localhost:27018/')
-db = mongo_client['location_db']
+db = mongo_client['stalkr']
 locations_collection = db['locations']
 
 # Establish Kafka Producer
 producer = KafkaProducer(bootstrap_servers=['localhost:9092'],
-                         value_serializer=lambda v: json.dumps(v).encode('utf-8'))
+                         value_serializer=lambda v: json.dumps(v).encode('utf-8'),
+                         key_serializer=lambda k: json.dumps(k).encode('utf-8'),
+                        #  api_version=(2, 5, 0),
+                         acks='all',
+                         retries=5)
+
+user = GrindrUser()
+mail = os.getenv('GRINDR_MAIL')
+password = os.getenv('GRINDR_PASS')
+
+DRY_RUN = 1
+SAVE_FILE = 1
+count = 0
 
 def fetch_locations():
-    return list([
-        {"_id": "location1"},
-        {"_id": "location2"}])
-    return list(locations_collection.find())
+    locations = list()
+    active_locations = locations_collection.find({'properties.isActive': True})
+    for location in active_locations:
+        locations.append(location)
+    return locations
 
-def query_data(location, query):
-    # Placeholder for actual query logic
-    # Assume each query returns user data for processing
-    print(f"Querying data for location {location['_id']} with query {query}")
-    return {"user_id": f"user_{query}", "data": f"data_from_{location['_id']}_{query}"}
-
-def produce_user_data(user_data):
-    producer.send('user_topic', user_data)
-    print(f"Produced {user_data} to Kafka")
+def produce_user_data(user_data: dict):
+    global count
+    count += 1
+    profile_id = str(user_data.get('profileId', ''))
+    data = user_data.get('data')
+    if data:
+        batch_id=str(data[0].get('batch_id', ''))
+    key = hashlib.sha256((profile_id + batch_id).encode('utf-8')).hexdigest()
+    print(count)
+    producer.send(topic='user_topic', value=user_data, key=key)
+    logger.debug(f"Produced {profile_id} to Kafka with key: {key}")
 
 def scrape_location_data(location):
-    print(f"Scraping data for location {location}")
-    batch_id = datetime.utcnow().isoformat()
-    queries = [f"query_{i}" for i in range(100)]
+    logger.info(f"Scraping data for location '{location['properties']['name']}'")
+    batch_id = datetime.utcnow().isoformat()  # corrected datetime usage
+    feature_points = generate_points_in_geojson_feature(location)
+    logger.info(f"Generated {len(feature_points)} points for location {location['properties']['name']}")
+    # Use ThreadPoolExecutor to parallelize the scraping process
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-        results = executor.map(lambda query: query_data(location, query), queries)
+        # Directly use process_anchor_point in the executor without a wrapper
+        futures = [executor.submit(query_anchor_point, anchor_point, user) for anchor_point in feature_points]
+        results = [future.result() for future in futures]
+    
     for result in results:
-        result['batch_id'] = batch_id
-        produce_user_data(result)
+        for user_data in result:
+            user_data['batch_id'] = batch_id
+    
+    profiles = {}
+    for result in results:
+        for user_data in result:
+            profileId = user_data.get('profileId')
+            if profileId:
+                if profileId not in profiles:
+                    profiles[profileId] = {"profileId": profileId, "data": [user_data]}
+                else:
+                    profiles[profileId]["data"].append(user_data)
+
+    if SAVE_FILE:
+        with open(f"results_{location['properties']['name']}.json", "w") as f:
+            json.dump(profiles, f)
+    else:
+        for user_data in profiles.values():
+            produce_user_data(user_data)
+
 
 if __name__ == '__main__':
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+    if not DRY_RUN:
+        logger.info("Logging in...")
+        while not user.login(mail, password):
+            logger.error("Login failed, retrying in 5 minutes")
+            sleep(60*5)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
         locations = fetch_locations()
-        executor.map(scrape_location_data, locations)
+        if DRY_RUN:
+            for location in locations:
+                with open(f"results_{location['properties']['name']}.json", "r") as f:
+                    profiles = json.load(f)
+
+                for user_data in profiles.values():
+                    produce_user_data(user_data)
+        else:
+            executor.map(scrape_location_data, locations)

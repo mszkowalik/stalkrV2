@@ -2,3 +2,8 @@ kafka-python
 pymongo==4.7.1
 shapely==2.0.3
 numpy==1.26.4
+python-dotenv==1.0.1
+pygeohash==1.2.0
+pycurl==7.45.2
+Pillow==10.2.0
+requests==2.31.0

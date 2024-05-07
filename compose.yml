@@ -5,6 +5,7 @@ services:
     container_name: zookeeper
     ports:
       - "2181:2181"
+    restart: unless-stopped
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
@@ -14,6 +15,7 @@ services:
     container_name: kafka
     depends_on:
       - zookeeper
+    restart: unless-stopped
     ports:
       - "9092:9092"
     environment:
@@ -32,6 +34,7 @@ services:
     ports:
       - "27018:27017"  # Default MongoDB port is 27017, you wanted 27018
     command: ["mongod", "--bind_ip_all"]
+    restart: unless-stopped
     volumes:
       - mongo_data:/data/db
 
