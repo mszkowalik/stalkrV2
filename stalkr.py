@@ -2,9 +2,17 @@ from shapely.geometry import shape, Point
 import numpy as np
 import logging
 import pygeohash as gh
+from copy import deepcopy
 # from grindr_access.paths import *
 from grindr_access.grindr_user import GrindrUser
 GH_PRECISION = 8
+
+def gh_to_point(gh_str):
+    lat, lon = gh.decode(gh_str)
+    return Point(lon, lat)
+                 
+def point_to_gh(point):
+    return gh.encode(longitude=point.x, latitude=point.y, precision=GH_PRECISION)
 
 def generate_points_in_geojson_feature(feature): # 100 points for kraków
     # Iterate over each feature in the GeoJSON
@@ -28,20 +36,20 @@ def generate_points_in_geojson_feature(feature): # 100 points for kraków
         
         # Check if the point is inside the polygon
         if polygon.contains(random_point):
-            feature_points.append((random_point.x, random_point.y))
+            feature_points.append(deepcopy(random_point))
     return feature_points
 
-def query_anchor_point(anchor_point, user:GrindrUser):
+def query_anchor_point(anchor_point:Point, user:GrindrUser):
     logging.debug(f"Processing anchor point: {anchor_point}")
     scraped_profiles = []
-    anchor_gh = gh.encode(longitude=anchor_point[0], latitude=anchor_point[1], precision=GH_PRECISION)
-    actual_anchor_point = list(gh.decode(anchor_gh))[::-1]  # Inverse the list
-    profile_list = user.getProfiles(lon=actual_anchor_point[0], lat=actual_anchor_point[1])
+    anchor_gh = point_to_gh(anchor_point)
+    actual_anchor_point = gh_to_point(anchor_gh)
+    profile_list = user.getProfiles(lon=actual_anchor_point.x, lat=actual_anchor_point.y)
     for profile in profile_list['items']:
         processed_profile = process_profile_response(profile)
         if processed_profile:
             processed_profile['anchorGh'] = anchor_gh
-            processed_profile['anchorPoint'] = actual_anchor_point
+            processed_profile['anchorPoint'] = actual_anchor_point.__geo_interface__
             scraped_profiles.append(processed_profile)
     return scraped_profiles
 

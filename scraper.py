@@ -18,7 +18,7 @@ logging.basicConfig(format='%(asctime)s %(message)s', level=logging.CRITICAL + 1
 
 # Create and configure a logger for your specific module
 logger = logging.getLogger('stalkrV2')
-logger.setLevel(logging.DEBUG)  # Set your logger's level to DEBUG
+logger.setLevel(logging.DEBUG+1)  # Set your logger's level to DEBUG
 
 load_dotenv()
 # Establish MongoDB connection
@@ -40,7 +40,6 @@ password = os.getenv('GRINDR_PASS')
 
 DRY_RUN = 1
 SAVE_FILE = 1
-count = 0
 
 def fetch_locations():
     locations = list()
@@ -50,15 +49,20 @@ def fetch_locations():
     return locations
 
 def produce_user_data(user_data: dict):
-    global count
-    count += 1
     profile_id = str(user_data.get('profileId', ''))
     data = user_data.get('data')
     if data:
         batch_id=str(data[0].get('batch_id', ''))
     key = hashlib.sha256((profile_id + batch_id).encode('utf-8')).hexdigest()
-    print(count)
-    producer.send(topic='user_topic', value=user_data, key=key)
+    # Send the message
+    future = producer.send(topic='user_topic', value=user_data, key=key)
+    # Wait for the send to complete and check for exceptions
+    try:
+        record_metadata = future.get(timeout=10)  # Adjust timeout as needed
+        logger.debug(f"Message sent to topic {record_metadata.topic}, partition {record_metadata.partition}, offset {record_metadata.offset}")
+    except Exception as e:
+        logger.error(f"Failed to send message for profile_id {profile_id} with key {key}: {e}")
+    
     logger.debug(f"Produced {profile_id} to Kafka with key: {key}")
 
 def scrape_location_data(location):
@@ -100,8 +104,10 @@ if __name__ == '__main__':
         while not user.login(mail, password):
             logger.error("Login failed, retrying in 5 minutes")
             sleep(60*5)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        locations = fetch_locations()
+
+    locations = fetch_locations()
+    workers = len(locations)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
         if DRY_RUN:
             for location in locations:
                 with open(f"results_{location['properties']['name']}.json", "r") as f:
